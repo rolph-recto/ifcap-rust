@@ -3,10 +3,11 @@
 
 use im::HashMap;
 use im::vector::Vector as IVector;
+use im::vector as ivector;
 
 /* language */
-#[derive(PartialEq,Eq,Clone,Hash)]
-struct Ident(String);
+#[derive(PartialEq,Eq,Clone,Copy,Hash)]
+struct Ident(&'static str);
 
 enum IfcapExpr {
     Lit(bool),
@@ -38,6 +39,7 @@ enum IfcapStmt {
 
     Recv { chan: IfcapExpr, var: Ident, body: Box<IfcapStmt> },
 
+    /*
     Join {
         chan1: IfcapExpr, chan2: IfcapExpr,
         var1: Ident, var2: Ident,
@@ -48,6 +50,7 @@ enum IfcapStmt {
         chan1: IfcapExpr, var1: Ident, body1: Box<IfcapStmt>,
         chan2: IfcapExpr, var2: Ident, body2: Box<IfcapStmt>
     }
+    */
 }
 
 /* type system */
@@ -131,6 +134,21 @@ impl TypeConstraint {
     ) -> TypeConstraint {
         TypeConstraint::Lattice(
             LatticeEq::Eq(
+                LatticeExpr::join(
+                    LatticeExpr::Var(label1),
+                    LatticeExpr::Var(label2)
+                ),
+                LatticeExpr::Var(label3)
+            )
+        )
+    }
+
+    // label1 join label2 flowsto label3
+    fn label_join_flowsto(
+        label1: LabelVar, label2: LabelVar, label3: LabelVar
+    ) -> TypeConstraint {
+        TypeConstraint::Lattice(
+            LatticeEq::FlowsTo(
                 LatticeExpr::join(
                     LatticeExpr::Var(label1),
                     LatticeExpr::Var(label2)
@@ -257,33 +275,29 @@ fn infer_type_expr(
             let op1_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e1);
             let op2_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e2);
 
-            let constraints = IVector::new();
+            let mut constraints = IVector::new();
             constraints.append(op1_out.constraints);
             constraints.append(op2_out.constraints);
 
             // output type is boolean, label must be join of operand labels
             let out_type: IfcapType = IfcapType::TypeBool { sec_label: name_ctx.fresh_label() };
-            constraints.push_back(
+            constraints.append(ivector![
                 TypeConstraint::label_join_eq(
                     op1_out.expr_type.label(),
                     op2_out.expr_type.label(),
                     out_type.label()
-                )
-            );
+                ),
 
-            // operands have to be booleans
-            constraints.push_back(
+                // operands have to be booleans
                 TypeConstraint::Unify(
                     IfcapType::TypeBool { sec_label: name_ctx.fresh_label() },
                     op1_out.expr_type
-                )
-            );
-            constraints.push_back(
+                ),
                 TypeConstraint::Unify(
                     IfcapType::TypeBool { sec_label: name_ctx.fresh_label() },
                     op2_out.expr_type
                 )
-            );
+            ]);
 
             ExprOutputContext {
                 expr_type: out_type,
@@ -294,26 +308,21 @@ fn infer_type_expr(
         // TODO: add security label on newref expr
         IfcapExpr::NewRef(init) => {
             let init_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, init);
-            let constraints = IVector::new();
+            let mut constraints = IVector::new();
             constraints.append(init_out.constraints);
 
             let ref_security = name_ctx.fresh_label();
             let ref_resource = name_ctx.fresh_label();
             let ref_val_type = name_ctx.fresh_tyvar_with_label(init_out.expr_type.label());
 
-            // well-formedness constraints for reference types
-            constraints.push_back(
-                TypeConstraint::label_nonempty(ref_resource)
-            );
+            constraints.append(ivector![
+                // well-formedness constraints for reference types
+                TypeConstraint::label_nonempty(ref_resource),
+                TypeConstraint::label_flowsto(ref_val_type.label(), ref_security),
 
-            constraints.push_back(
-                TypeConstraint::label_flowsto(ref_val_type.label(), ref_security)
-            );
-
-            // flows-to constraints for security 
-            constraints.push_back(
+                // security context constraints
                 TypeConstraint::label_join_eq(pc_label, progress_label, ref_security)
-            );
+            ]);
 
             ExprOutputContext {
                 expr_type: IfcapType::TypeRef {
@@ -331,25 +340,17 @@ fn infer_type_expr(
             let send_resource = name_ctx.fresh_label();
             let recv_resource = name_ctx.fresh_label();
 
-            let constraints = IVector::new();
+            let mut constraints = IVector::new();
 
-            // well-formedness of channel type
-            constraints.push_back(
-                TypeConstraint::label_flowsto(val_type.label(), chan_security)
-            );
+            constraints.append(ivector![
+                // well-formedness of channel type
+                TypeConstraint::label_flowsto(val_type.label(), chan_security),
+                TypeConstraint::label_nonempty(send_resource),
+                TypeConstraint::label_nonempty(recv_resource),
 
-            constraints.push_back(
-                TypeConstraint::label_nonempty(send_resource)
-            );
-
-            constraints.push_back(
-                TypeConstraint::label_nonempty(recv_resource)
-            );
-
-            // security context constraints 
-            constraints.push_back(
+                // security context constraints 
                 TypeConstraint::label_join_eq(pc_label, progress_label, chan_security)
-            );
+            ]);
 
             ExprOutputContext {
                 expr_type: IfcapType::TypeChan {
@@ -370,22 +371,20 @@ fn infer_type_expr(
             let out_type = name_ctx.fresh_tyvar();
             let ref_security = name_ctx.fresh_label();
             let ref_resource = name_ctx.fresh_label();
-
-            let constraints = IVector::new();
-            constraints.append(ref_ctx.constraints);
-
-            constraints.push_back(
-                TypeConstraint::label_overlaps(cap_label, ref_resource)
-            );
-
-            constraints.push_back(
-                TypeConstraint::label_flowsto(ref_security, out_type.label())
-            );
-
             let val_type2 = val_type.clone();
-            constraints.push_back(
+
+            let mut constraints = IVector::new();
+            constraints.append(ref_ctx.constraints);
+            constraints.append(ivector![
+                // thread must have shared access to reference resource
+                TypeConstraint::label_overlaps(cap_label, ref_resource),
+
+                // ref label lower bounds output label
+                TypeConstraint::label_flowsto(ref_security, out_type.label()),
+
+                // val label lower bounds output label
                 TypeConstraint::Subtype(val_type, out_type)
-            );
+            ]);
 
             ExprOutputContext {
                 expr_type: IfcapType::TypeRef {
@@ -420,7 +419,7 @@ fn infer_type_stmt(
         IfcapStmt::Let { var, expr, stmt } => {
             let expr_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, expr);
 
-            let stmt_env = env.clone();
+            let mut stmt_env = env.clone();
             stmt_env.insert(*var, expr_out.expr_type);
 
             let stmt_out = infer_type_stmt(name_ctx, &stmt_env, sched_label, pc_label, progress_label, cap_label, stmt);
@@ -461,6 +460,7 @@ fn infer_type_stmt(
 
         IfcapStmt::If { guard, then_branch, else_branch } => {
             let guard_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, guard);
+            let guard_label = guard_out.expr_type.label();
             let branch_pc = name_ctx.fresh_label();
             let then_out =
                 infer_type_stmt(
@@ -473,39 +473,32 @@ fn infer_type_stmt(
                     sched_label, branch_pc, progress_label, cap_label,
                     else_branch);
 
-            let constraints = IVector::new();
+            let mut constraints = IVector::new();
             constraints.append(guard_out.constraints);
             constraints.append(then_out.constraints);
             constraints.append(else_out.constraints);
 
-            // guard label must flow to pc label of branches
-            constraints.push_back(
-                TypeConstraint::label_join_eq(
-                    pc_label, guard_out.expr_type.label(),
-                    branch_pc
-                )
-            );
+            constraints.append(ivector![
+                // guard must be a boolean
+                TypeConstraint::Unify(
+                    guard_out.expr_type,
+                    IfcapType::TypeBool { sec_label: guard_label }
+                ),
 
-            // output contexts at branches must match
-            constraints.push_back(
-                TypeConstraint::label_eq(then_out.sched_label, else_out.sched_label)
-            );
-            constraints.push_back(
-                TypeConstraint::label_eq(then_out.progress_label, else_out.progress_label)
-            );
-            constraints.push_back(
-                TypeConstraint::label_eq(then_out.cap_label, else_out.cap_label)
-            );
+                // guard label must flow to pc label of branches
+                TypeConstraint::label_join_eq(pc_label, guard_label, branch_pc),
 
-            // scheduler label must upper bound branch pc
-            constraints.push_back(
-                TypeConstraint::label_flowsto(branch_pc, sched_label)
-            );
+                // output contexts at branches must match
+                TypeConstraint::label_eq(then_out.sched_label, else_out.sched_label),
+                TypeConstraint::label_eq(then_out.progress_label, else_out.progress_label),
+                TypeConstraint::label_eq(then_out.cap_label, else_out.cap_label),
 
-            // thread must have shared access to global scheduler resource
-            constraints.push_back(
+                // scheduler label must upper bound branch pc
+                TypeConstraint::label_flowsto(branch_pc, sched_label),
+
+                // thread must have shared access to global scheduler resource
                 TypeConstraint::label_flowsto(cap_label, name_ctx.sched_resource)
-            );
+            ]);
 
             StmtOutputContext {
                 sched_label: else_out.sched_label,
@@ -517,6 +510,7 @@ fn infer_type_stmt(
 
         IfcapStmt::While { guard, body } => {
             let guard_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, guard);
+            let guard_label = guard_out.expr_type.label();
             let body_pc = name_ctx.fresh_label();
             let body_out =
                 infer_type_stmt(
@@ -524,37 +518,31 @@ fn infer_type_stmt(
                     sched_label, body_pc, progress_label, cap_label,
                     body);
 
-            let constraints = IVector::new();
+            let mut constraints = IVector::new();
             constraints.append(guard_out.constraints);
             constraints.append(body_out.constraints);
 
-            // guard label must flow to pc label of branches
-            constraints.push_back(
-                TypeConstraint::label_join_eq(
-                    pc_label, guard_out.expr_type.label(), body_pc
-                )
-            );
+            constraints.append(ivector![
+                // guard must be a boolean
+                TypeConstraint::Unify(
+                    guard_out.expr_type,
+                    IfcapType::TypeBool { sec_label: guard_label }
+                ),
 
-            // input and output contexts of body must match
-            constraints.push_back(
-                TypeConstraint::label_eq(sched_label, body_out.sched_label)
-            );
-            constraints.push_back(
-                TypeConstraint::label_eq(progress_label, body_out.progress_label)
-            );
-            constraints.push_back(
-                TypeConstraint::label_eq(cap_label, body_out.cap_label)
-            );
+                // guard label must flow to pc label of branches
+                TypeConstraint::label_join_eq(pc_label, guard_label, body_pc),
 
-            // scheduler label must upper bound branch pc
-            constraints.push_back(
-                TypeConstraint::label_flowsto(body_pc, sched_label)
-            );
+                // input and output contexts of body must match
+                TypeConstraint::label_eq(sched_label, body_out.sched_label),
+                TypeConstraint::label_eq(progress_label, body_out.progress_label),
+                TypeConstraint::label_eq(cap_label, body_out.cap_label),
 
-            // thread must have shared access to global scheduler resource
-            constraints.push_back(
+                // scheduler label must upper bound branch pc
+                TypeConstraint::label_flowsto(body_pc, sched_label),
+
+                // thread must have shared access to global scheduler resource
                 TypeConstraint::label_flowsto(cap_label, name_ctx.sched_resource)
-            );
+            ]);
 
             StmtOutputContext {
                 sched_label: sched_label,
@@ -574,19 +562,16 @@ fn infer_type_stmt(
                     sched_label, pc_label, progress_label, spawn_cap_label,
                     stmt);
 
-            let constraints = IVector::new();
+            let mut constraints = IVector::new();
             constraints.append(spawn_out.constraints);
 
-            // make sure continuation and spawned capabilities are disjoint
-            constraints.push_back(
+            constraints.append(ivector![
+                // make sure continuation and spawned capabilities are disjoint
                 TypeConstraint::label_meet_eq(
                     spawn_cap_label, cont_cap_label, cap_label
-                )
-            );
-
-            constraints.push_back(
+                ),
                 TypeConstraint::label_disjoint(spawn_cap_label, cont_cap_label)
-            );
+            ]);
 
             StmtOutputContext {
                 sched_label: sched_label,
@@ -596,14 +581,150 @@ fn infer_type_stmt(
             }
         },
 
-        IfcapStmt::Send { value, chan } => { },
+        IfcapStmt::Send { value, chan } => {
+            let value_out =
+                infer_type_expr(
+                    name_ctx, env,
+                    pc_label, progress_label, cap_label,
+                    value);
 
-        IfcapStmt::Recv { chan, var, body } => { },
+            let chan_out =
+                infer_type_expr(
+                    name_ctx, env,
+                    pc_label, progress_label, cap_label,
+                    chan);
 
-        IfcapStmt::Join { chan1, chan2, var1, var2, body } => { },
+            let chan_send_res = name_ctx.fresh_label();
+            let chan_recv_res = name_ctx.fresh_label();
+            let chan_send_trans = name_ctx.fresh_label();
+            let chan_recv_trans = name_ctx.fresh_label();
+            let chan_val_type = name_ctx.fresh_tyvar();
+            let chan_val_type2 = chan_val_type.clone();
+            let chan_type = IfcapType::TypeChan {
+                sec_label: chan_out.expr_type.label(),
+                send_res_label: chan_send_res,
+                recv_res_label: chan_recv_res,
+                send_trans_label: chan_send_trans,
+                recv_trans_label: chan_recv_trans,
+                val_type: Box::new(chan_val_type)
+            };
 
-        IfcapStmt::Select { chan1, var1, body1, chan2, var2, body2 } => { },
+            let cap2_label = name_ctx.fresh_label();
+            let cap3_label = name_ctx.fresh_label();
+
+            let progress2_label = name_ctx.fresh_label();
+
+            let mut constraints = IVector::new();
+            constraints.append(value_out.constraints);
+            constraints.append(chan_out.constraints);
+            constraints.append(ivector![
+                // capability check
+                TypeConstraint::label_flowsto(cap_label, chan_send_res),
+
+                // capability transfer
+                TypeConstraint::label_meet_eq(chan_send_trans, cap2_label, cap_label),
+                TypeConstraint::label_disjoint(chan_send_trans, cap2_label),
+                TypeConstraint::label_meet_eq(chan_recv_trans, cap2_label, cap3_label),
+
+                // progress leak
+                TypeConstraint::label_join_flowsto(pc_label, progress_label, chan_type.label()),
+                TypeConstraint::label_flowsto(chan_type.label(), progress2_label),
+
+                // types must match
+                TypeConstraint::Unify(chan_out.expr_type, chan_type),
+                TypeConstraint::Subtype(value_out.expr_type, chan_val_type2),
+            ]);
+
+            StmtOutputContext {
+                sched_label: sched_label,
+                progress_label: progress2_label,
+                cap_label: cap3_label,
+                constraints: constraints
+            }
+        },
+
+        IfcapStmt::Recv { chan, var, body } => {
+            let chan_out =
+                infer_type_expr(
+                    name_ctx, env,
+                    pc_label, progress_label, cap_label,
+                    chan);
+
+            let mut body_env = env.clone();
+            body_env.insert(*var, chan_out.expr_type.clone());
+
+            let progress2_label = name_ctx.fresh_label();
+            let cap2_label = name_ctx.fresh_label();
+            let cap3_label = name_ctx.fresh_label();
+
+            let body_out =
+                infer_type_stmt(
+                    name_ctx, &body_env,
+                    sched_label, pc_label, progress2_label, cap3_label,
+                    body);
+
+            let chan_send_res = name_ctx.fresh_label();
+            let chan_recv_res = name_ctx.fresh_label();
+            let chan_send_trans = name_ctx.fresh_label();
+            let chan_recv_trans = name_ctx.fresh_label();
+            let chan_val_type = name_ctx.fresh_tyvar();
+            let chan_type = IfcapType::TypeChan {
+                sec_label: chan_out.expr_type.label(),
+                send_res_label: chan_send_res,
+                recv_res_label: chan_recv_res,
+                send_trans_label: chan_send_trans,
+                recv_trans_label: chan_recv_trans,
+                val_type: Box::new(chan_val_type)
+            };
+
+            let mut constraints = IVector::new();
+            constraints.append(chan_out.constraints);
+            constraints.append(body_out.constraints);
+            constraints.append(ivector![
+                // chan has to have a channel type
+                TypeConstraint::Unify(chan_out.expr_type, chan_type.clone()),
+
+                // progress leak
+                TypeConstraint::label_join_flowsto(pc_label, progress_label, chan_type.label()),
+                TypeConstraint::label_flowsto(chan_type.label(), progress2_label),
+
+                // capability check
+                TypeConstraint::label_flowsto(cap_label, chan_recv_res),
+
+                // capability transfer
+                TypeConstraint::label_meet_eq(chan_recv_trans, cap2_label, cap_label),
+                TypeConstraint::label_disjoint(chan_recv_trans, cap2_label),
+                TypeConstraint::label_meet_eq(chan_send_trans, cap2_label, cap3_label),
+            ]);
+
+            StmtOutputContext {
+                sched_label: body_out.sched_label,
+                progress_label: body_out.progress_label,
+                cap_label: body_out.cap_label,
+                constraints: constraints
+            }
+        },
     }
+}
+
+fn gen_constraints(stmt: &IfcapStmt) -> IVector<TypeConstraint> {
+    let mut name_ctx = NameContext::new();
+    let env = HashMap::new();
+    let sched_label = name_ctx.fresh_label();
+    let pc_label = name_ctx.fresh_label();
+    let progress_label = name_ctx.fresh_label();
+    let cap_label = name_ctx.fresh_label();
+    let stmt_out =
+        infer_type_stmt(
+            &mut name_ctx, &env,
+            sched_label, pc_label, progress_label, cap_label,
+            stmt
+        );
+    let mut constraints = stmt_out.constraints;
+    constraints.push_back(
+        TypeConstraint::label_nonempty(name_ctx.sched_resource)
+    );
+    constraints
 }
 
 fn main() {
