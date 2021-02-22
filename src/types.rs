@@ -6,6 +6,7 @@ pub mod constr_solve;
 
 use std::fmt;
 use std::fmt::Display;
+use std::error::Error;
 
 use im::HashMap;
 use crate::lang::Ident;
@@ -13,7 +14,14 @@ use crate::lang::Ident;
 // security/capability label with identifier
 #[derive(Copy, Clone, Debug)]
 pub struct LabelVar(i32);
+
 pub type TypeVarId = i32;
+
+impl Display for LabelVar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "v{}", self.0)
+    }
+}
 
 #[derive(Clone,Debug)]
 pub enum IfcapType {
@@ -44,13 +52,24 @@ impl Display for IfcapType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use IfcapType::*;
         match self {
-            TypeBool { .. } => write!(f, "bool"),
+            TypeBool { sec_label } => write!(f, "bool_{}", sec_label),
 
-            TypeRef { val_type, .. } => write!(f, "ref {}", val_type),
+            TypeRef { sec_label, res_label, val_type } =>
+                write!(f, "ref_{}^{} {}", sec_label, res_label, val_type),
 
-            TypeChan { val_type, .. } => write!(f, "chan {}", val_type),
+            TypeChan {
+                sec_label,
+                send_res_label, recv_res_label,
+                send_trans_label, recv_trans_label,
+                val_type
+            } =>
+                write!(f, "chan_{} ({},{}) ({},{}) {}",
+                    sec_label,
+                    send_res_label, recv_res_label,
+                    send_trans_label, recv_trans_label,
+                    val_type),
 
-            TypeVar { id, .. }=> write!(f, "ty{}", id)
+            TypeVar { id, sec_label }=> write!(f, "ty{}_{}", id, sec_label)
         }
     }
 }
@@ -59,7 +78,7 @@ type IfcapEnv = HashMap<Ident, IfcapType>;
 
 // type constraints
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum LatticeExpr { // lattice expression
     Top,
     Bottom,
@@ -78,14 +97,44 @@ impl LatticeExpr {
     }
 }
 
-#[derive(Clone)]
+impl Display for LatticeExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use LatticeExpr::*;
+        match self {
+            Top => write!(f, "⊤"),
+
+            Bottom => write!(f, "⊥"),
+
+            Var(v) => write!(f, "{}", v),
+
+            Join(l1,l2) => write!(f, "{} ⊔ {}", l1, l2),
+
+            Meet(l1,l2) => write!(f, "{} ⊓ {}", l1, l2),
+        }
+    }
+}
+
+#[derive(Clone,Debug)]
 pub enum LatticeEq { // lattice equations
     FlowsTo(LatticeExpr, LatticeExpr),
     Neq(LatticeExpr, LatticeExpr),
     Eq(LatticeExpr, LatticeExpr)
 }
 
-#[derive(Clone)]
+impl Display for LatticeEq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use LatticeEq::*;
+        match self {
+            FlowsTo(l1, l2) => write!(f, "{} ⊑ {}", l1, l2),
+
+            Neq(l1, l2) => write!(f, "{} != {}", l1, l2),
+
+            Eq(l1, l2) => write!(f, "{} = {}", l1, l2),
+        }
+    }
+}
+
+#[derive(Clone,Debug)]
 pub enum TypeConstraint { // type inference constraint
     Unify(IfcapType, IfcapType),
     Subtype(IfcapType, IfcapType),
@@ -194,6 +243,19 @@ impl TypeConstraint {
     }
 }
 
+impl Display for TypeConstraint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use TypeConstraint::*;
+        match self {
+            Unify(ty1, ty2) => write!(f, "{} = {}", ty1, ty2),
+
+            Subtype(ty1, ty2) => write!(f, "{} <: {}", ty1, ty2),
+
+            Lattice(lat_eq) => write!(f, "{}", lat_eq)
+        }
+    }
+}
+
 // type inference error
 
 #[derive(Debug)]
@@ -203,7 +265,7 @@ pub enum InferenceError {
     InfiniteTypeError(TypeVarId,IfcapType),
 }
 
-impl std::fmt::Display for InferenceError {
+impl Display for InferenceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use InferenceError::*;
         match self {
@@ -216,4 +278,4 @@ impl std::fmt::Display for InferenceError {
     }
 }
 
-impl std::error::Error for InferenceError {}
+impl Error for InferenceError {}

@@ -2,6 +2,7 @@
 
 use im::HashMap;
 use im::vector::Vector as IVector;
+use im::vector as ivector;
 use super::IfcapType;
 use super::IfcapType::*;
 use super::TypeVarId;
@@ -9,43 +10,61 @@ use super::TypeConstraint;
 use super::TypeConstraint::*;
 use super::InferenceError;
 use super::InferenceError::*;
+use super::LatticeExpr;
+use super::LatticeEq;
 
 /// substitution of type variables with types
 pub type Subst = HashMap<TypeVarId, IfcapType>;
 
-/// apply substitution `sub` to type `ty`
-fn substitute(ty: &IfcapType, sub: &Subst) -> IfcapType {
-    match ty {
-        TypeVar { id, ..} => {
-            if sub.contains_key(id) {
-                sub[id].clone()
+/// apply substitution `sub` to `self
+trait Substitutable {
+    fn substitute(&self, sub: &Subst) -> Self;
+}
 
-            } else {
-                ty.clone()
+impl Substitutable for IfcapType {
+    fn substitute(&self, sub: &Subst) -> IfcapType {
+        match self {
+            TypeVar { id, ..} => {
+                if sub.contains_key(id) {
+                    sub[id].clone()
+
+                } else {
+                    self.clone()
+                }
+            }
+
+            TypeBool { .. } => self.clone(),
+
+            TypeRef { sec_label, res_label, val_type } => {
+                let val_type_sub = val_type.substitute(sub);
+                TypeRef {
+                    sec_label: *sec_label,
+                    res_label: *res_label,
+                    val_type: Box::new(val_type_sub)
+                }
+            }
+
+            TypeChan { sec_label, send_res_label, recv_res_label,
+                send_trans_label, recv_trans_label, val_type } =>
+            {
+                let val_type_sub = val_type.substitute(sub);
+                TypeChan {
+                    sec_label: *sec_label,
+                    send_res_label: *send_res_label, recv_res_label: *recv_res_label,
+                    send_trans_label: *send_trans_label, recv_trans_label: *recv_trans_label,
+                    val_type: Box::new(val_type_sub)
+                }
             }
         }
+    }
+}
 
-        TypeBool { .. } => ty.clone(),
-
-        TypeRef { sec_label, res_label, val_type } => {
-            let val_type_sub = substitute(val_type, sub);
-            TypeRef {
-                sec_label: *sec_label,
-                res_label: *res_label,
-                val_type: Box::new(val_type_sub)
-            }
-        }
-
-        TypeChan { sec_label, send_res_label, recv_res_label,
-            send_trans_label, recv_trans_label, val_type } =>
-        {
-            let val_type_sub = substitute(val_type, sub);
-            TypeChan {
-                sec_label: *sec_label,
-                send_res_label: *send_res_label, recv_res_label: *recv_res_label,
-                send_trans_label: *send_trans_label, recv_trans_label: *recv_trans_label,
-                val_type: Box::new(val_type_sub)
-            }
+impl Substitutable for TypeConstraint {
+    fn substitute(&self, sub: &Subst) -> TypeConstraint {
+        match self {
+            Unify(ty1,ty2)=> Unify(ty1.substitute(sub), ty2.substitute(sub)),
+            Subtype(ty1,ty2)=> Subtype(ty1.substitute(sub), ty2.substitute(sub)),
+            _ => self.clone()
         }
     }
 }
@@ -54,7 +73,7 @@ fn substitute(ty: &IfcapType, sub: &Subst) -> IfcapType {
 fn compose_subst(sub1: &Subst, sub2: &Subst) -> Subst {
     let mut sub2_composed = Subst::new();
     for (k, v) in sub2.iter() {
-        sub2_composed.insert(*k, substitute(v, sub1));
+        sub2_composed.insert(*k, v.substitute(sub1));
     }
 
     sub1.clone().union(sub2_composed)
@@ -142,7 +161,118 @@ pub fn solve_unification_constraints(
     Result::Ok(cur_subst)
 }
 
-pub fn infer_type(program: &crate::lang::IfcapStmt) -> Result<Subst,InferenceError> {
-    let constraints = super::constr_gen::gen_constraints(program)?;
-    solve_unification_constraints(&constraints)
+/// generate lattice constraints from unification constraints
+fn unify_induce_lattice_eqs(ty1: &IfcapType, ty2: &IfcapType) -> IVector<LatticeEq> {
+    match (ty1, ty2) {
+        (TypeBool { sec_label: sec1 }, TypeBool { sec_label: sec2 }) =>
+            ivector!(
+                LatticeEq::Eq(LatticeExpr::Var(*sec1), LatticeExpr::Var(*sec2))
+            ),
+
+        (TypeRef { sec_label: sec1, res_label: res1, val_type: val1 },
+        TypeRef { sec_label: sec2, res_label: res2, val_type: val2 }) => {
+            let mut eqs = IVector::new();
+            eqs.append(unify_induce_lattice_eqs(val1, val2));
+            eqs.append(ivector![
+                LatticeEq::Eq(LatticeExpr::Var(*sec1), LatticeExpr::Var(*sec2)),
+                LatticeEq::Eq(LatticeExpr::Var(*res1), LatticeExpr::Var(*res2)),
+            ]);
+
+            eqs
+        }
+
+        (TypeChan { sec_label: sec1, send_res_label: send_res1, recv_res_label: recv_res1,
+                    send_trans_label: send_trans1, recv_trans_label: recv_trans1, val_type: val1 },
+        TypeChan { sec_label: sec2, send_res_label: send_res2, recv_res_label: recv_res2,
+                    send_trans_label: send_trans2, recv_trans_label: recv_trans2, val_type: val2 }) => {
+            let mut eqs = IVector::new();
+            eqs.append(unify_induce_lattice_eqs(val1, val2));
+            eqs.append(ivector![
+                LatticeEq::Eq(LatticeExpr::Var(*sec1), LatticeExpr::Var(*sec2)),
+                LatticeEq::Eq(LatticeExpr::Var(*send_res1), LatticeExpr::Var(*send_res2)),
+                LatticeEq::Eq(LatticeExpr::Var(*recv_res1), LatticeExpr::Var(*recv_res2)),
+                LatticeEq::Eq(LatticeExpr::Var(*send_trans1), LatticeExpr::Var(*send_trans2)),
+                LatticeEq::Eq(LatticeExpr::Var(*recv_trans1), LatticeExpr::Var(*recv_trans2)),
+            ]);
+
+            eqs
+        }
+
+        _ => IVector::new()
+    }
+}
+
+/// generate lattice constraints from subtyping constraints
+fn subtype_induce_lattice_eqs(ty1: &IfcapType, ty2: &IfcapType) -> IVector<LatticeEq> {
+    match (ty1, ty2) {
+        (TypeBool { sec_label: sec1 }, TypeBool { sec_label: sec2 }) =>
+            ivector!(
+                LatticeEq::Eq(LatticeExpr::Var(*sec1), LatticeExpr::Var(*sec2))
+            ),
+
+        (TypeRef { sec_label: sec1, res_label: res1, val_type: val1 },
+        TypeRef { sec_label: sec2, res_label: res2, val_type: val2 }) => {
+            let mut eqs = IVector::new();
+            eqs.append(unify_induce_lattice_eqs(val1, val2));
+            eqs.append(ivector![
+                LatticeEq::FlowsTo(LatticeExpr::Var(*sec1), LatticeExpr::Var(*sec2)),
+                LatticeEq::Eq(LatticeExpr::Var(*res1), LatticeExpr::Var(*res2)),
+            ]);
+
+            eqs
+        }
+
+        (TypeChan { sec_label: sec1, send_res_label: send_res1, recv_res_label: recv_res1,
+                    send_trans_label: send_trans1, recv_trans_label: recv_trans1, val_type: val1 },
+        TypeChan { sec_label: sec2, send_res_label: send_res2, recv_res_label: recv_res2,
+                    send_trans_label: send_trans2, recv_trans_label: recv_trans2, val_type: val2 }) => {
+            let mut eqs = IVector::new();
+            eqs.append(subtype_induce_lattice_eqs(val1, val2));
+            eqs.append(ivector![
+                LatticeEq::FlowsTo(LatticeExpr::Var(*sec1), LatticeExpr::Var(*sec2)),
+                LatticeEq::Eq(LatticeExpr::Var(*send_res1), LatticeExpr::Var(*send_res2)),
+                LatticeEq::Eq(LatticeExpr::Var(*recv_res1), LatticeExpr::Var(*recv_res2)),
+                LatticeEq::Eq(LatticeExpr::Var(*send_trans1), LatticeExpr::Var(*send_trans2)),
+                LatticeEq::Eq(LatticeExpr::Var(*recv_trans1), LatticeExpr::Var(*recv_trans2)),
+            ]);
+
+            eqs
+        }
+
+        _ => IVector::new()
+    }
+}
+
+
+// TODO: finish
+fn solve_lattice_constraints(constraints: IVector<LatticeEq>) -> Result<(),InferenceError> {
+    Ok(())
+}
+
+pub fn infer_type(program: &crate::lang::IfcapStmt) -> Result<(),InferenceError> {
+    let mut constraints = super::constr_gen::gen_constraints(program)?;
+    let mut unifier;
+    
+    loop {
+        unifier = solve_unification_constraints(&constraints)?;
+        if unifier.len() == 0 { break; }
+
+        constraints =
+            constraints.iter()
+            .map(|constr| { constr.substitute(&unifier) })
+            .collect::<IVector<TypeConstraint>>();
+    }
+
+    let lattice_eqs =
+        constraints.iter()
+        .flat_map(|constr| {
+            match constr {
+                TypeConstraint::Unify(ty1, ty2) => unify_induce_lattice_eqs(ty1, ty2),
+                TypeConstraint::Subtype(ty1, ty2) => subtype_induce_lattice_eqs(ty1, ty2),
+                TypeConstraint::Lattice(eq) => ivector!(eq.clone()),
+            }
+        })
+        .collect::<IVector<LatticeEq>>();
+
+    solve_lattice_constraints(lattice_eqs)
 }

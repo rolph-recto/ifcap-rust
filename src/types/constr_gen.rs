@@ -252,11 +252,15 @@ fn infer_type_stmt(
                     sched_label, pc_label, progress_label, cap_label,
                     stmt)?;
 
+            let mut constraints = IVector::new();
+            constraints.append(expr_out.constraints);
+            constraints.append(stmt_out.constraints);
+
             Result::Ok(StmtOutputContext {
                 sched_label: stmt_out.sched_label,
                 progress_label: stmt_out.progress_label,
                 cap_label: stmt_out.cap_label,
-                constraints: stmt_out.constraints
+                constraints: constraints
             })
         },
 
