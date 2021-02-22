@@ -1,19 +1,19 @@
 // types.res
 // type system and type inference
 
-mod constr_gen;
-mod constr_solve;
+pub mod constr_gen;
+pub mod constr_solve;
 
 use im::HashMap;
 use crate::lang::Ident;
 
 // security/capability label with identifier
 #[derive(Copy, Clone)]
-struct LabelVar(i32);
-type TypeVarId = i32;
+pub struct LabelVar(i32);
+pub type TypeVarId = i32;
 
 #[derive(Clone)]
-enum IfcapType {
+pub enum IfcapType {
     TypeBool { sec_label: LabelVar },
     TypeRef { sec_label: LabelVar, res_label: LabelVar, val_type: Box<IfcapType> },
     TypeChan {
@@ -38,8 +38,10 @@ impl IfcapType {
 
 type IfcapEnv = HashMap<Ident, IfcapType>;
 
+// type constraints
+
 #[derive(Clone)]
-enum LatticeExpr { // lattice expression
+pub enum LatticeExpr { // lattice expression
     Top,
     Bottom,
     Var(LabelVar),
@@ -58,14 +60,14 @@ impl LatticeExpr {
 }
 
 #[derive(Clone)]
-enum LatticeEq { // lattice equations
+pub enum LatticeEq { // lattice equations
     FlowsTo(LatticeExpr, LatticeExpr),
     Neq(LatticeExpr, LatticeExpr),
     Eq(LatticeExpr, LatticeExpr)
 }
 
 #[derive(Clone)]
-enum TypeConstraint { // type inference constraint
+pub enum TypeConstraint { // type inference constraint
     Unify(IfcapType, IfcapType),
     Subtype(IfcapType, IfcapType),
     Lattice(LatticeEq)
@@ -167,4 +169,12 @@ impl TypeConstraint {
             )
         )
     }
+}
+
+// type inference error
+
+pub enum InferenceError {
+    UnknownBindingError(Ident),
+    UnificationError(IfcapType,IfcapType),
+    InfiniteTypeError(TypeVarId,IfcapType),
 }

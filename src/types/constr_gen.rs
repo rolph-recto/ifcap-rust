@@ -1,5 +1,4 @@
-// constr_gen.rs
-// generate typing constraints
+//! generate typing constraints
 
 use im::HashMap;
 use im::vector::Vector as IVector;
@@ -11,9 +10,14 @@ use crate::lang::IfcapStmt;
 
 use super::IfcapEnv;
 use super::IfcapType;
+use super::IfcapType::*;
 use super::LabelVar;
 use super::TypeConstraint;
+use super::InferenceError;
+use super::InferenceError::*;
 
+/// state for constraint generation; contains fresh label and type variable IDs
+/// as well as the global scheduler resource
 struct NameContext {
     next_label_id: i32,
     next_tyvar_id: i32,
@@ -44,13 +48,13 @@ impl NameContext {
     }
 }
 
-
+/// output context for expression constraints
 struct ExprOutputContext {
     expr_type: IfcapType,
     constraints: IVector<TypeConstraint>
 }
 
-// infer type for expression
+/// infer type for expression; takes type environment and input context, returns expression type
 fn infer_type_expr(
     name_ctx: &mut NameContext,
     env: &IfcapEnv,
@@ -58,25 +62,38 @@ fn infer_type_expr(
     progress_label: LabelVar,
     cap_label: LabelVar,
     expr: &IfcapExpr
-) -> ExprOutputContext {
+) -> Result<ExprOutputContext,InferenceError> {
+    use IfcapExpr::*;
     match expr {
-        IfcapExpr::Lit(_) => {
-            ExprOutputContext {
-                expr_type: IfcapType::TypeBool { sec_label: name_ctx.fresh_label() } ,
-                constraints: IVector::new()
+        Var(var) => {
+            if let Some(var_type) = env.get(var) {
+                Result::Ok(ExprOutputContext {
+                    expr_type: var_type.clone(),
+                    constraints: IVector::new(),
+                })
+
+            } else {
+                Result::Err(UnknownBindingError(*var))
             }
         }
 
+        Lit(_) => {
+            Result::Ok(ExprOutputContext {
+                expr_type: TypeBool { sec_label: name_ctx.fresh_label() } ,
+                constraints: IVector::new()
+            })
+        }
+
         IfcapExpr::Op(e1, e2) => {
-            let op1_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e1);
-            let op2_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e2);
+            let op1_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e1)?;
+            let op2_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e2)?;
 
             let mut constraints = IVector::new();
             constraints.append(op1_out.constraints);
             constraints.append(op2_out.constraints);
 
             // output type is boolean, label must be join of operand labels
-            let out_type: IfcapType = IfcapType::TypeBool { sec_label: name_ctx.fresh_label() };
+            let out_type: IfcapType = TypeBool { sec_label: name_ctx.fresh_label() };
             constraints.append(ivector![
                 TypeConstraint::label_join_eq(
                     op1_out.expr_type.label(),
@@ -86,24 +103,24 @@ fn infer_type_expr(
 
                 // operands have to be booleans
                 TypeConstraint::Unify(
-                    IfcapType::TypeBool { sec_label: name_ctx.fresh_label() },
+                    TypeBool { sec_label: name_ctx.fresh_label() },
                     op1_out.expr_type
                 ),
                 TypeConstraint::Unify(
-                    IfcapType::TypeBool { sec_label: name_ctx.fresh_label() },
+                    TypeBool { sec_label: name_ctx.fresh_label() },
                     op2_out.expr_type
                 )
             ]);
 
-            ExprOutputContext {
+            Result::Ok(ExprOutputContext {
                 expr_type: out_type,
                 constraints: constraints
-            }
+            })
         }
 
         // TODO: add security label on newref expr
         IfcapExpr::NewRef(init) => {
-            let init_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, init);
+            let init_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, init)?;
             let mut constraints = IVector::new();
             constraints.append(init_out.constraints);
 
@@ -120,14 +137,14 @@ fn infer_type_expr(
                 TypeConstraint::label_join_eq(pc_label, progress_label, ref_security)
             ]);
 
-            ExprOutputContext {
+            Result::Ok(ExprOutputContext {
                 expr_type: IfcapType::TypeRef {
                     sec_label: ref_security,
                     res_label: ref_resource,
                     val_type: Box::new(ref_val_type)
                 },
                 constraints: constraints
-            }
+            })
         }
 
         IfcapExpr::NewChan =>  {
@@ -148,7 +165,7 @@ fn infer_type_expr(
                 TypeConstraint::label_join_eq(pc_label, progress_label, chan_security)
             ]);
 
-            ExprOutputContext {
+            Result::Ok(ExprOutputContext {
                 expr_type: IfcapType::TypeChan {
                     sec_label: chan_security,
                     send_res_label: send_resource,
@@ -158,11 +175,11 @@ fn infer_type_expr(
                     val_type: Box::new(val_type)
                 },
                 constraints: constraints
-            }
+            })
         }
 
         IfcapExpr::Deref(ref_expr) => {
-            let ref_ctx = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, ref_expr);
+            let ref_ctx = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, ref_expr)?;
             let val_type = name_ctx.fresh_tyvar();
             let out_type = name_ctx.fresh_tyvar();
             let ref_security = name_ctx.fresh_label();
@@ -182,19 +199,19 @@ fn infer_type_expr(
                 TypeConstraint::Subtype(val_type, out_type)
             ]);
 
-            ExprOutputContext {
+            Result::Ok(ExprOutputContext {
                 expr_type: IfcapType::TypeRef {
                     sec_label: ref_security,
                     res_label: ref_resource,
                     val_type: Box::new(val_type2)
                 },
                 constraints: constraints
-            }
+            })
         }
     }
 }
 
-
+/// output context for statement constraints
 struct StmtOutputContext { 
     sched_label: LabelVar,
     progress_label: LabelVar,
@@ -202,6 +219,7 @@ struct StmtOutputContext {
     constraints: IVector<TypeConstraint>
 }
 
+/// infer type for expression; takes type environment and input context, returns output context
 fn infer_type_stmt(
     name_ctx: &mut NameContext,
     env: &IfcapEnv,
@@ -210,22 +228,26 @@ fn infer_type_stmt(
     progress_label: LabelVar,
     cap_label: LabelVar,
     stmt: &IfcapStmt
-) -> StmtOutputContext {
+) -> Result<StmtOutputContext,InferenceError> {
     match stmt {
         IfcapStmt::Let { var, expr, stmt } => {
-            let expr_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, expr);
+            let expr_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, expr)?;
 
             let mut stmt_env = env.clone();
             stmt_env.insert(*var, expr_out.expr_type);
 
-            let stmt_out = infer_type_stmt(name_ctx, &stmt_env, sched_label, pc_label, progress_label, cap_label, stmt);
+            let stmt_out =
+                infer_type_stmt(
+                    name_ctx, &stmt_env,
+                    sched_label, pc_label, progress_label, cap_label,
+                    stmt)?;
 
-            StmtOutputContext {
+            Result::Ok(StmtOutputContext {
                 sched_label: stmt_out.sched_label,
                 progress_label: stmt_out.progress_label,
                 cap_label: stmt_out.cap_label,
                 constraints: stmt_out.constraints
-            }
+            })
         },
 
         IfcapStmt::Block { stmts } => {
@@ -239,35 +261,39 @@ fn infer_type_stmt(
                     infer_type_stmt(
                         name_ctx, env,
                         cur_sched_label, pc_label, cur_progress_label, cur_cap_label,
-                        stmt);
+                        stmt)?;
                 cur_sched_label = stmt_out.sched_label;
                 cur_progress_label = stmt_out.progress_label;
                 cur_cap_label = stmt_out.cap_label;
                 constraints.append(stmt_out.constraints);
             }
 
-            StmtOutputContext {
+            Result::Ok(StmtOutputContext {
                 sched_label: cur_sched_label,
                 progress_label: cur_progress_label,
                 cap_label: cur_cap_label,
                 constraints: constraints
-            }
+            })
         },
 
         IfcapStmt::If { guard, then_branch, else_branch } => {
-            let guard_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, guard);
+            let guard_out =
+                infer_type_expr(
+                    name_ctx, &env,
+                    pc_label, progress_label, cap_label,
+                    guard)?;
             let guard_label = guard_out.expr_type.label();
             let branch_pc = name_ctx.fresh_label();
             let then_out =
                 infer_type_stmt(
                     name_ctx, &env,
                     sched_label, branch_pc, progress_label, cap_label,
-                    then_branch);
+                    then_branch)?;
             let else_out =
                 infer_type_stmt(
                     name_ctx, &env,
                     sched_label, branch_pc, progress_label, cap_label,
-                    else_branch);
+                    else_branch)?;
 
             let mut constraints = IVector::new();
             constraints.append(guard_out.constraints);
@@ -296,23 +322,27 @@ fn infer_type_stmt(
                 TypeConstraint::label_flowsto(cap_label, name_ctx.sched_resource)
             ]);
 
-            StmtOutputContext {
+            Result::Ok(StmtOutputContext {
                 sched_label: else_out.sched_label,
                 progress_label: else_out.progress_label,
                 cap_label: else_out.cap_label,
                 constraints: constraints
-            }
+            })
         },
 
         IfcapStmt::While { guard, body } => {
-            let guard_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, guard);
+            let guard_out =
+                infer_type_expr(
+                    name_ctx, &env,
+                    pc_label, progress_label, cap_label,
+                    guard)?;
             let guard_label = guard_out.expr_type.label();
             let body_pc = name_ctx.fresh_label();
             let body_out =
                 infer_type_stmt(
                     name_ctx, &env,
                     sched_label, body_pc, progress_label, cap_label,
-                    body);
+                    body)?;
 
             let mut constraints = IVector::new();
             constraints.append(guard_out.constraints);
@@ -340,12 +370,12 @@ fn infer_type_stmt(
                 TypeConstraint::label_flowsto(cap_label, name_ctx.sched_resource)
             ]);
 
-            StmtOutputContext {
+            Result::Ok(StmtOutputContext {
                 sched_label: sched_label,
                 progress_label: sched_label,
                 cap_label: sched_label,
                 constraints: constraints
-            }
+            })
         },
 
         IfcapStmt::Spawn { stmt } => {
@@ -356,7 +386,7 @@ fn infer_type_stmt(
                 infer_type_stmt(
                     name_ctx, env,
                     sched_label, pc_label, progress_label, spawn_cap_label,
-                    stmt);
+                    stmt)?;
 
             let mut constraints = IVector::new();
             constraints.append(spawn_out.constraints);
@@ -369,12 +399,12 @@ fn infer_type_stmt(
                 TypeConstraint::label_disjoint(spawn_cap_label, cont_cap_label)
             ]);
 
-            StmtOutputContext {
+            Result::Ok(StmtOutputContext {
                 sched_label: sched_label,
                 progress_label: progress_label,
                 cap_label: cont_cap_label,
                 constraints: constraints
-            }
+            })
         },
 
         IfcapStmt::Send { value, chan } => {
@@ -382,13 +412,13 @@ fn infer_type_stmt(
                 infer_type_expr(
                     name_ctx, env,
                     pc_label, progress_label, cap_label,
-                    value);
+                    value)?;
 
             let chan_out =
                 infer_type_expr(
                     name_ctx, env,
                     pc_label, progress_label, cap_label,
-                    chan);
+                    chan)?;
 
             let chan_send_res = name_ctx.fresh_label();
             let chan_recv_res = name_ctx.fresh_label();
@@ -431,20 +461,20 @@ fn infer_type_stmt(
                 TypeConstraint::Subtype(value_out.expr_type, chan_val_type2),
             ]);
 
-            StmtOutputContext {
+            Result::Ok(StmtOutputContext {
                 sched_label: sched_label,
                 progress_label: progress2_label,
                 cap_label: cap3_label,
                 constraints: constraints
-            }
+            })
         },
 
-        IfcapStmt::Recv { chan, var, body } => {
+        IfcapStmt::Recv { chan, var, stmt } => {
             let chan_out =
                 infer_type_expr(
                     name_ctx, env,
                     pc_label, progress_label, cap_label,
-                    chan);
+                    chan)?;
 
             let mut body_env = env.clone();
             body_env.insert(*var, chan_out.expr_type.clone());
@@ -457,7 +487,7 @@ fn infer_type_stmt(
                 infer_type_stmt(
                     name_ctx, &body_env,
                     sched_label, pc_label, progress2_label, cap3_label,
-                    body);
+                    stmt)?;
 
             let chan_send_res = name_ctx.fresh_label();
             let chan_recv_res = name_ctx.fresh_label();
@@ -493,17 +523,18 @@ fn infer_type_stmt(
                 TypeConstraint::label_meet_eq(chan_send_trans, cap2_label, cap3_label),
             ]);
 
-            StmtOutputContext {
+            Result::Ok(StmtOutputContext {
                 sched_label: body_out.sched_label,
                 progress_label: body_out.progress_label,
                 cap_label: body_out.cap_label,
                 constraints: constraints
-            }
+            })
         },
     }
 }
 
-fn gen_constraints(stmt: &IfcapStmt) -> IVector<TypeConstraint> {
+/// generate type constraints from program statement
+pub fn gen_constraints(stmt: &IfcapStmt) -> Result<IVector<TypeConstraint>,InferenceError> {
     let mut name_ctx = NameContext::new();
     let env: HashMap<Ident, IfcapType> = HashMap::new();
     let sched_label = name_ctx.fresh_label();
@@ -515,10 +546,10 @@ fn gen_constraints(stmt: &IfcapStmt) -> IVector<TypeConstraint> {
             &mut name_ctx, &env,
             sched_label, pc_label, progress_label, cap_label,
             stmt
-        );
+        )?;
     let mut constraints = stmt_out.constraints;
     constraints.push_back(
         TypeConstraint::label_nonempty(name_ctx.sched_resource)
     );
-    constraints
+    Result::Ok(constraints)
 }

@@ -1,5 +1,4 @@
-// constr_solve.rs
-// solve typing constraints
+//! solve typing constraints
 
 use im::HashMap;
 use im::vector::Vector as IVector;
@@ -8,12 +7,13 @@ use super::IfcapType::*;
 use super::TypeVarId;
 use super::TypeConstraint;
 use super::TypeConstraint::*;
+use super::InferenceError;
+use super::InferenceError::*;
 
-// substitution of type variables with types
-type Subst = HashMap<TypeVarId, IfcapType>;
+/// substitution of type variables with types
+pub type Subst = HashMap<TypeVarId, IfcapType>;
 
-// fn apply(subst: &Subst, ty: &IfcapType) -> IfcapType;
-
+/// apply substitution `sub` to type `ty`
 fn substitute(ty: &IfcapType, sub: &Subst) -> IfcapType {
     match ty {
         TypeVar { id, ..} => {
@@ -50,6 +50,7 @@ fn substitute(ty: &IfcapType, sub: &Subst) -> IfcapType {
     }
 }
 
+/// compose substitutions `sub1` and `sub2` together
 fn compose_subst(sub1: &Subst, sub2: &Subst) -> Subst {
     let mut sub2_composed = Subst::new();
     for (k, v) in sub2.iter() {
@@ -59,6 +60,7 @@ fn compose_subst(sub1: &Subst, sub2: &Subst) -> Subst {
     sub1.clone().union(sub2_composed)
 }
 
+/// perform occurs check for type variable `id` in type `ty`
 fn occurs_check(id: TypeVarId, ty: &IfcapType) -> bool {
     match ty {
         TypeVar { id: var_id, .. } => id == *var_id,
@@ -71,27 +73,29 @@ fn occurs_check(id: TypeVarId, ty: &IfcapType) -> bool {
     }
 }
 
-fn unify_var(id: TypeVarId, ty: &IfcapType) -> Option<Subst> {
+/// unify variable `id` with type `ty`
+fn unify_var(id: TypeVarId, ty: &IfcapType) -> Result<Subst,InferenceError> {
     match ty {
-        TypeVar { .. } => { Option::from(Subst::new()) }
+        TypeVar { .. } => { Result::Ok(Subst::new()) }
 
         _ => {
             if !occurs_check(id, ty) {
                 let mut subst = Subst::new();
                 subst.insert(id, ty.clone());
-                Option::from(subst)
+                Result::Ok(subst)
 
-            } else {
-                Option::None
+            } else { // occurs check fail; there is an infinite term
+                Result::Err(InfiniteTypeError(id, ty.clone()))
             }
         }
     }
 }
 
-fn unify(ty1: &IfcapType, ty2: &IfcapType) -> Option<Subst> {
+/// unify types `ty1` and `ty2`
+fn unify(ty1: &IfcapType, ty2: &IfcapType) -> Result<Subst,InferenceError> {
     match (ty1, ty2) {
         (TypeVar { .. }, TypeVar { .. }) => {
-            Option::from(Subst::new())
+            Result::Ok(Subst::new())
         }
 
         (TypeVar { id: id1, .. }, _) => {
@@ -103,7 +107,7 @@ fn unify(ty1: &IfcapType, ty2: &IfcapType) -> Option<Subst> {
         }
 
         (TypeBool { .. }, TypeBool { .. }) => {
-            Option::from(Subst::new())
+            Result::Ok(Subst::new())
         }
 
         (TypeRef { val_type: val_type1, .. }, TypeRef { val_type: val_type2, .. }) => {
@@ -114,26 +118,26 @@ fn unify(ty1: &IfcapType, ty2: &IfcapType) -> Option<Subst> {
             unify(val_type1, val_type2)
         }
 
-        _ => {
-            Option::None
+        _ => { // unification failed
+            Result::Err(UnificationError(ty1.clone(),ty2.clone()))
         }
     }
 }
 
-fn solve_unification_constraints(constraints: &IVector<TypeConstraint>) -> Option<Subst> {
+// solve all unification constraints by composing unifications in sequence
+pub fn solve_unification_constraints(
+    constraints: &IVector<TypeConstraint>
+) -> Result<Subst,InferenceError> {
     let mut cur_subst = Subst::new();
     for constraint in constraints.iter() {
         let unify_res = match constraint {
             Unify(ty1, ty2) => unify(ty1, ty2),
             Subtype(ty1, ty2) => unify(ty1, ty2),
-            _ => Option::from(Subst::new())
-        };
+            _ => Result::Ok(Subst::new())
+        }?;
 
-        if let Some(subst) = unify_res {
-            cur_subst = compose_subst(&cur_subst, &subst);
-
-        } else { return unify_res }
+        cur_subst = compose_subst(&cur_subst, &unify_res);
     }
 
-    Option::from(cur_subst)
+    Result::Ok(cur_subst)
 }
