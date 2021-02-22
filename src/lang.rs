@@ -19,6 +19,8 @@ pub enum IfcapExpr {
 pub enum IfcapStmt {
     Let { var: Ident, expr: IfcapExpr, stmt: Box<IfcapStmt> },
 
+    Assign { lhs: IfcapExpr, rhs: IfcapExpr },
+
     Block { stmts: IVector<IfcapStmt> },
 
     If {
@@ -57,29 +59,33 @@ pub enum IfcapStmt {
 use IfcapExpr::*;
 use IfcapStmt::*;
 
-pub fn expr_var(var: &'static str) -> IfcapExpr { Var(Ident(var)) }
+pub fn var(var: &'static str) -> IfcapExpr { Var(Ident(var)) }
 
-pub fn expr_lit(b: bool) -> IfcapExpr { Lit(b) }
+pub fn lit(b: bool) -> IfcapExpr { Lit(b) }
 
-pub fn expr_op(expr1: IfcapExpr, expr2: IfcapExpr) -> IfcapExpr {
+pub fn op(expr1: IfcapExpr, expr2: IfcapExpr) -> IfcapExpr {
     Op(Box::new(expr1), Box::new(expr2))
 }
 
-pub fn expr_newref(expr: IfcapExpr) -> IfcapExpr {
+pub fn newref(expr: IfcapExpr) -> IfcapExpr {
     NewRef(Box::new(expr))
 }
 
-pub fn expr_newchan() -> IfcapExpr { NewChan }
+pub fn newchan() -> IfcapExpr { NewChan }
 
-pub fn expr_deref(ref_expr: IfcapExpr) -> IfcapExpr { 
+pub fn deref(ref_expr: IfcapExpr) -> IfcapExpr { 
     Deref(Box::new(ref_expr))
 }
 
-pub fn stmt_let(var: &'static str, expr: IfcapExpr, cont: IfcapStmt) -> IfcapStmt {
+pub fn letvar(var: &'static str, expr: IfcapExpr, cont: IfcapStmt) -> IfcapStmt {
     Let { var: Ident(var), expr, stmt: Box::new(cont) }
 }
 
-pub fn stmt_if(guard: IfcapExpr, then_branch: IfcapStmt, else_branch: IfcapStmt) -> IfcapStmt {
+pub fn assign(lhs: IfcapExpr, rhs: IfcapExpr) -> IfcapStmt {
+    Assign { lhs, rhs }
+}
+
+pub fn cond(guard: IfcapExpr, then_branch: IfcapStmt, else_branch: IfcapStmt) -> IfcapStmt {
     If {
         guard,
         then_branch: Box::new(then_branch),
@@ -87,19 +93,19 @@ pub fn stmt_if(guard: IfcapExpr, then_branch: IfcapStmt, else_branch: IfcapStmt)
     }
 }
 
-pub fn stmt_while(guard: IfcapExpr, body: IfcapStmt) -> IfcapStmt {
+pub fn while_loop(guard: IfcapExpr, body: IfcapStmt) -> IfcapStmt {
     While { guard, body: Box::new(body), }
 }
 
-pub fn stmt_spawn(stmt: IfcapStmt) -> IfcapStmt {
+pub fn spawn(stmt: IfcapStmt) -> IfcapStmt {
     Spawn { stmt: Box::new(stmt) }
 }
 
-pub fn stmt_send(value: IfcapExpr, chan:IfcapExpr) -> IfcapStmt {
+pub fn send(value: IfcapExpr, chan:IfcapExpr) -> IfcapStmt {
     Send { value, chan }
 }
 
-pub fn stmt_recv(chan:IfcapExpr, var: &'static str, cont: IfcapStmt) -> IfcapStmt {
+pub fn recv(chan:IfcapExpr, var: &'static str, cont: IfcapStmt) -> IfcapStmt {
     Recv { chan, var: Ident(var), stmt: Box::new(cont) }
 }
 

@@ -12,8 +12,16 @@ use types::InferenceError;
 
 fn prog1() -> IfcapStmt {
     stmts(ivector![
-        stmt_let("x", expr_newref(expr_lit(true)), stmts(ivector![
-        stmt_send(expr_lit(true), expr_var("x"))
+        letvar("x", newref(lit(true)), stmts(ivector![
+        send(lit(true), var("x"))
+        ]))
+    ])
+}
+
+fn prog2() -> IfcapStmt {
+    stmts(ivector![
+        letvar("x", newchan(), stmts(ivector![
+        assign(var("x"), lit(true))
         ]))
     ])
 }
@@ -24,7 +32,7 @@ fn infer_type(program: &IfcapStmt) -> Result<Subst,InferenceError> {
 }
 
 fn main() {
-    let solution = infer_type(&prog());
+    let solution = infer_type(&prog2());
 
     match solution {
         Result::Ok(_) => {

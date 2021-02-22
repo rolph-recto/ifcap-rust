@@ -6,7 +6,9 @@ use im::vector as ivector;
 
 use crate::lang::Ident;
 use crate::lang::IfcapExpr;
+use crate::lang::IfcapExpr::*;
 use crate::lang::IfcapStmt;
+use crate::lang::IfcapStmt::*;
 
 use super::IfcapEnv;
 use super::IfcapType;
@@ -38,13 +40,13 @@ impl NameContext {
     fn fresh_tyvar(&mut self) -> IfcapType {
         let id = self.next_label_id;
         self.next_label_id += 1;
-        IfcapType::TypeVar { id: id, sec_label: self.fresh_label() }
+        TypeVar { id: id, sec_label: self.fresh_label() }
     }
 
     fn fresh_tyvar_with_label(&mut self, label: LabelVar) -> IfcapType {
         let id = self.next_label_id;
         self.next_label_id += 1;
-        IfcapType::TypeVar { id: id, sec_label: label }
+        TypeVar { id: id, sec_label: label }
     }
 }
 
@@ -63,7 +65,6 @@ fn infer_type_expr(
     cap_label: LabelVar,
     expr: &IfcapExpr
 ) -> Result<ExprOutputContext,InferenceError> {
-    use IfcapExpr::*;
     match expr {
         Var(var) => {
             if let Some(var_type) = env.get(var) {
@@ -84,7 +85,7 @@ fn infer_type_expr(
             })
         }
 
-        IfcapExpr::Op(e1, e2) => {
+        Op(e1, e2) => {
             let op1_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e1)?;
             let op2_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, e2)?;
 
@@ -119,7 +120,7 @@ fn infer_type_expr(
         }
 
         // TODO: add security label on newref expr
-        IfcapExpr::NewRef(init) => {
+        NewRef(init) => {
             let init_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, init)?;
             let mut constraints = IVector::new();
             constraints.append(init_out.constraints);
@@ -138,7 +139,7 @@ fn infer_type_expr(
             ]);
 
             Result::Ok(ExprOutputContext {
-                expr_type: IfcapType::TypeRef {
+                expr_type: TypeRef {
                     sec_label: ref_security,
                     res_label: ref_resource,
                     val_type: Box::new(ref_val_type)
@@ -147,7 +148,7 @@ fn infer_type_expr(
             })
         }
 
-        IfcapExpr::NewChan =>  {
+        NewChan =>  {
             let val_type = name_ctx.fresh_tyvar();
             let chan_security = name_ctx.fresh_label();
             let send_resource = name_ctx.fresh_label();
@@ -166,7 +167,7 @@ fn infer_type_expr(
             ]);
 
             Result::Ok(ExprOutputContext {
-                expr_type: IfcapType::TypeChan {
+                expr_type: TypeChan {
                     sec_label: chan_security,
                     send_res_label: send_resource,
                     recv_res_label: recv_resource,
@@ -178,7 +179,7 @@ fn infer_type_expr(
             })
         }
 
-        IfcapExpr::Deref(ref_expr) => {
+        Deref(ref_expr) => {
             let ref_ctx = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, ref_expr)?;
             let val_type = name_ctx.fresh_tyvar();
             let out_type = name_ctx.fresh_tyvar();
@@ -200,7 +201,7 @@ fn infer_type_expr(
             ]);
 
             Result::Ok(ExprOutputContext {
-                expr_type: IfcapType::TypeRef {
+                expr_type: TypeRef {
                     sec_label: ref_security,
                     res_label: ref_resource,
                     val_type: Box::new(val_type2)
@@ -230,7 +231,7 @@ fn infer_type_stmt(
     stmt: &IfcapStmt
 ) -> Result<StmtOutputContext,InferenceError> {
     match stmt {
-        IfcapStmt::Let { var, expr, stmt } => {
+        Let { var, expr, stmt } => {
             let expr_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, expr)?;
 
             let mut stmt_env = env.clone();
@@ -250,7 +251,40 @@ fn infer_type_stmt(
             })
         },
 
-        IfcapStmt::Block { stmts } => {
+        Assign { lhs, rhs } => {
+            let lhs_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, lhs)?;
+            let rhs_out = infer_type_expr(name_ctx, &env, pc_label, progress_label, cap_label, rhs)?;
+
+            let mut constraints = IVector::new();
+            constraints.append(lhs_out.constraints);
+            constraints.append(rhs_out.constraints);
+
+            let ref_res = name_ctx.fresh_label();
+            let ref_val_type = name_ctx.fresh_tyvar();
+            let ref_type = TypeRef {
+                sec_label: lhs_out.expr_type.label(),
+                res_label: ref_res,
+                val_type: Box::new(ref_val_type.clone())
+            };
+
+            constraints.append(ivector![
+                // must have exclusive capability to reference resource
+                TypeConstraint::label_flowsto(cap_label, ref_res),
+
+                // lhs must be a reference type, and rhs must match ref value type
+                TypeConstraint::Unify(lhs_out.expr_type, ref_type),
+                TypeConstraint::Subtype(rhs_out.expr_type, ref_val_type),
+            ]);
+
+            Result::Ok(StmtOutputContext {
+                sched_label,
+                progress_label,
+                cap_label,
+                constraints
+            })
+        }
+
+        Block { stmts } => {
             let mut cur_sched_label = sched_label;
             let mut cur_progress_label = sched_label;
             let mut cur_cap_label = sched_label;
@@ -276,7 +310,7 @@ fn infer_type_stmt(
             })
         },
 
-        IfcapStmt::If { guard, then_branch, else_branch } => {
+        If { guard, then_branch, else_branch } => {
             let guard_out =
                 infer_type_expr(
                     name_ctx, &env,
@@ -330,7 +364,7 @@ fn infer_type_stmt(
             })
         },
 
-        IfcapStmt::While { guard, body } => {
+        While { guard, body } => {
             let guard_out =
                 infer_type_expr(
                     name_ctx, &env,
@@ -378,7 +412,7 @@ fn infer_type_stmt(
             })
         },
 
-        IfcapStmt::Spawn { stmt } => {
+        Spawn { stmt } => {
             let spawn_cap_label = name_ctx.fresh_label();
             let cont_cap_label = name_ctx.fresh_label();
 
@@ -407,7 +441,7 @@ fn infer_type_stmt(
             })
         },
 
-        IfcapStmt::Send { value, chan } => {
+        Send { value, chan } => {
             let value_out =
                 infer_type_expr(
                     name_ctx, env,
@@ -426,7 +460,7 @@ fn infer_type_stmt(
             let chan_recv_trans = name_ctx.fresh_label();
             let chan_val_type = name_ctx.fresh_tyvar();
             let chan_val_type2 = chan_val_type.clone();
-            let chan_type = IfcapType::TypeChan {
+            let chan_type = TypeChan {
                 sec_label: chan_out.expr_type.label(),
                 send_res_label: chan_send_res,
                 recv_res_label: chan_recv_res,
@@ -469,7 +503,7 @@ fn infer_type_stmt(
             })
         },
 
-        IfcapStmt::Recv { chan, var, stmt } => {
+        Recv { chan, var, stmt } => {
             let chan_out =
                 infer_type_expr(
                     name_ctx, env,
