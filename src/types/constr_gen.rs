@@ -15,7 +15,6 @@ use super::IfcapEnv;
 use super::IfcapType;
 use super::IfcapType::*;
 use super::LabelVar;
-use super::LatticeExpr;
 use super::TypeConstraint;
 use super::InferenceError;
 use super::InferenceError::*;
@@ -126,18 +125,18 @@ fn infer_type_expr(
             let mut constraints = IVector::new();
             constraints.append(init_out.constraints);
 
-            let sec_level_label =
-                match sec_level {
-                    SecurityLevel::Secret => LatticeExpr::Top,
-                    SecurityLevel::Public => LatticeExpr::Bottom
-                };
-
             let ref_security = name_ctx.fresh_label();
             let ref_resource = name_ctx.fresh_label();
             let ref_val_type = name_ctx.fresh_tyvar_with_label(init_out.expr_type.label());
 
             constraints.append(ivector![
-                TypeConstraint::label_flowsto_expr(sec_level_label, LatticeExpr::Var(ref_security)),
+                match sec_level {
+                    // top flowsto l => top = l
+                    SecurityLevel::Secret => TypeConstraint::label_empty(ref_security),
+
+                    // bottom flows to everything so just add a constraint that's always true
+                    SecurityLevel::Public => TypeConstraint::label_eq(ref_security, ref_security)
+                },
 
                 // well-formedness constraints for reference types
                 TypeConstraint::label_nonempty(ref_resource),

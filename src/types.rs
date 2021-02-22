@@ -3,6 +3,7 @@
 
 pub mod constr_gen;
 pub mod constr_solve;
+pub mod lattice_solve;
 
 use std::fmt;
 use std::fmt::Display;
@@ -80,8 +81,6 @@ type IfcapEnv = HashMap<Ident, IfcapType>;
 
 #[derive(Clone,Debug)]
 pub enum LatticeExpr { // lattice expression
-    Top,
-    Bottom,
     Var(LabelVar),
     Join(Box<LatticeExpr>,Box<LatticeExpr>),
     Meet(Box<LatticeExpr>, Box<LatticeExpr>)
@@ -101,10 +100,6 @@ impl Display for LatticeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use LatticeExpr::*;
         match self {
-            Top => write!(f, "⊤"),
-
-            Bottom => write!(f, "⊥"),
-
             Var(v) => write!(f, "{}", v),
 
             Join(l1,l2) => write!(f, "{} ⊔ {}", l1, l2),
@@ -117,8 +112,9 @@ impl Display for LatticeExpr {
 #[derive(Clone,Debug)]
 pub enum LatticeEq { // lattice equations
     FlowsTo(LatticeExpr, LatticeExpr),
-    Neq(LatticeExpr, LatticeExpr),
-    Eq(LatticeExpr, LatticeExpr)
+    Eq(LatticeExpr, LatticeExpr),
+    EqTop(LatticeExpr),
+    NeqTop(LatticeExpr),
 }
 
 impl Display for LatticeEq {
@@ -127,9 +123,11 @@ impl Display for LatticeEq {
         match self {
             FlowsTo(l1, l2) => write!(f, "{} ⊑ {}", l1, l2),
 
-            Neq(l1, l2) => write!(f, "{} != {}", l1, l2),
-
             Eq(l1, l2) => write!(f, "{} = {}", l1, l2),
+
+            EqTop(l) => write!(f, "{} = T", l),
+
+            NeqTop(l) => write!(f, "{} != ⊤", l),
         }
     }
 }
@@ -211,8 +209,7 @@ impl TypeConstraint {
 
     fn label_disjoint(label1: LabelVar, label2: LabelVar) -> TypeConstraint {
         TypeConstraint::Lattice(
-            LatticeEq::Eq(
-                LatticeExpr::Top,
+            LatticeEq::EqTop(
                 LatticeExpr::join(
                     LatticeExpr::Var(label1),
                     LatticeExpr::Var(label2)
@@ -223,8 +220,7 @@ impl TypeConstraint {
 
     fn label_overlaps(label1: LabelVar, label2: LabelVar) -> TypeConstraint {
         TypeConstraint::Lattice(
-            LatticeEq::Neq(
-                LatticeExpr::Top,
+            LatticeEq::NeqTop(
                 LatticeExpr::join(
                     LatticeExpr::Var(label1),
                     LatticeExpr::Var(label2)
@@ -235,10 +231,13 @@ impl TypeConstraint {
 
     fn label_nonempty(label: LabelVar) -> TypeConstraint {
         TypeConstraint::Lattice(
-            LatticeEq::Neq(
-                LatticeExpr::Top,
-                LatticeExpr::Var(label)
-            )
+            LatticeEq::NeqTop(LatticeExpr::Var(label))
+        )
+    }
+
+    fn label_empty(label: LabelVar) -> TypeConstraint {
+        TypeConstraint::Lattice(
+            LatticeEq::EqTop(LatticeExpr::Var(label))
         )
     }
 }

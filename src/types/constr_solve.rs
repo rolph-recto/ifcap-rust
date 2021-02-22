@@ -246,6 +246,14 @@ fn subtype_induce_lattice_eqs(ty1: &IfcapType, ty2: &IfcapType) -> IVector<Latti
 
 // TODO: finish
 fn solve_lattice_constraints(constraints: IVector<LatticeEq>) -> Result<(),InferenceError> {
+    let mut translator = super::lattice_solve::TranslationContext::new();
+    let predicates = translator.lattice_encoding_to_predicates(constraints);
+    let propositions = translator.propositionalize(predicates);
+
+    for proposition in propositions.iter() {
+        println!("{}", proposition)
+    }
+
     Ok(())
 }
 
