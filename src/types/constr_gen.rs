@@ -9,11 +9,13 @@ use crate::lang::IfcapExpr;
 use crate::lang::IfcapExpr::*;
 use crate::lang::IfcapStmt;
 use crate::lang::IfcapStmt::*;
+use crate::lang::SecurityLevel;
 
 use super::IfcapEnv;
 use super::IfcapType;
 use super::IfcapType::*;
 use super::LabelVar;
+use super::LatticeExpr;
 use super::TypeConstraint;
 use super::InferenceError;
 use super::InferenceError::*;
@@ -119,17 +121,24 @@ fn infer_type_expr(
             })
         }
 
-        // TODO: add security label on newref expr
-        NewRef(init) => {
+        NewRef(init, sec_level) => {
             let init_out = infer_type_expr(name_ctx, env, pc_label, progress_label, cap_label, init)?;
             let mut constraints = IVector::new();
             constraints.append(init_out.constraints);
+
+            let sec_level_label =
+                match sec_level {
+                    SecurityLevel::Secret => LatticeExpr::Top,
+                    SecurityLevel::Public => LatticeExpr::Bottom
+                };
 
             let ref_security = name_ctx.fresh_label();
             let ref_resource = name_ctx.fresh_label();
             let ref_val_type = name_ctx.fresh_tyvar_with_label(init_out.expr_type.label());
 
             constraints.append(ivector![
+                TypeConstraint::label_flowsto_expr(sec_level_label, LatticeExpr::Var(ref_security)),
+
                 // well-formedness constraints for reference types
                 TypeConstraint::label_nonempty(ref_resource),
                 TypeConstraint::label_flowsto(ref_val_type.label(), ref_security),

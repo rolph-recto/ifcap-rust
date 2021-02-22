@@ -7,12 +7,13 @@ mod lang;
 
 use im::vector as ivector;
 use lang::*;
+use lang::SecurityLevel::*;
 use types::constr_solve::Subst;
 use types::InferenceError;
 
 fn prog1() -> IfcapStmt {
     stmts(ivector![
-        letvar("x", newref(lit(true)), stmts(ivector![
+        letvar("x", newref(lit(true), Public), stmts(ivector![
         send(lit(true), var("x"))
         ]))
     ])

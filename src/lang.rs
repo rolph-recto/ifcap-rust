@@ -5,12 +5,15 @@ use im::Vector as IVector;
 #[derive(PartialEq,Eq,Clone,Copy,Hash)]
 pub struct Ident(&'static str);
 
+#[derive(PartialEq,Eq,Clone,Copy)]
+pub enum SecurityLevel { Public, Secret }
+
 #[derive(PartialEq,Eq,Clone)]
 pub enum IfcapExpr {
     Var(Ident),
     Lit(bool),
     Op(Box<IfcapExpr>, Box<IfcapExpr>),
-    NewRef(Box<IfcapExpr>),
+    NewRef(Box<IfcapExpr>, SecurityLevel),
     NewChan,
     Deref(Box<IfcapExpr>)
 }
@@ -67,8 +70,8 @@ pub fn op(expr1: IfcapExpr, expr2: IfcapExpr) -> IfcapExpr {
     Op(Box::new(expr1), Box::new(expr2))
 }
 
-pub fn newref(expr: IfcapExpr) -> IfcapExpr {
-    NewRef(Box::new(expr))
+pub fn newref(expr: IfcapExpr, sec_level: SecurityLevel) -> IfcapExpr {
+    NewRef(Box::new(expr), sec_level)
 }
 
 pub fn newchan() -> IfcapExpr { NewChan }

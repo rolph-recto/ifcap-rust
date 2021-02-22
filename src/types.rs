@@ -74,6 +74,10 @@ pub enum TypeConstraint { // type inference constraint
 }
 
 impl TypeConstraint {
+    fn label_flowsto_expr(expr1: LatticeExpr, expr2: LatticeExpr) -> TypeConstraint {
+        TypeConstraint::Lattice(LatticeEq::FlowsTo(expr1, expr2))
+    }
+
     fn label_flowsto(label1: LabelVar, label2: LabelVar) -> TypeConstraint {
         TypeConstraint::Lattice(
             LatticeEq::FlowsTo(
