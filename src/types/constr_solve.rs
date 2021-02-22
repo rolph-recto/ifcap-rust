@@ -141,3 +141,8 @@ pub fn solve_unification_constraints(
 
     Result::Ok(cur_subst)
 }
+
+pub fn infer_type(program: &crate::lang::IfcapStmt) -> Result<Subst,InferenceError> {
+    let constraints = super::constr_gen::gen_constraints(program)?;
+    solve_unification_constraints(&constraints)
+}

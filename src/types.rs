@@ -4,15 +4,18 @@
 pub mod constr_gen;
 pub mod constr_solve;
 
+use std::fmt;
+use std::fmt::Display;
+
 use im::HashMap;
 use crate::lang::Ident;
 
 // security/capability label with identifier
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct LabelVar(i32);
 pub type TypeVarId = i32;
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum IfcapType {
     TypeBool { sec_label: LabelVar },
     TypeRef { sec_label: LabelVar, res_label: LabelVar, val_type: Box<IfcapType> },
@@ -27,11 +30,27 @@ pub enum IfcapType {
 
 impl IfcapType {
     fn label(&self) -> LabelVar { 
+        use IfcapType::*;
         match self {
-            IfcapType::TypeBool { sec_label } => *sec_label,
-            IfcapType::TypeRef { sec_label, .. } => *sec_label,
-            IfcapType::TypeChan { sec_label, .. }=> *sec_label,
-            IfcapType::TypeVar { sec_label, .. }=> *sec_label
+            TypeBool { sec_label } => *sec_label,
+            TypeRef { sec_label, .. } => *sec_label,
+            TypeChan { sec_label, .. }=> *sec_label,
+            TypeVar { sec_label, .. }=> *sec_label
+        }
+    }
+}
+
+impl Display for IfcapType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use IfcapType::*;
+        match self {
+            TypeBool { .. } => write!(f, "bool"),
+
+            TypeRef { val_type, .. } => write!(f, "ref {}", val_type),
+
+            TypeChan { val_type, .. } => write!(f, "chan {}", val_type),
+
+            TypeVar { id, .. }=> write!(f, "ty{}", id)
         }
     }
 }
@@ -177,8 +196,24 @@ impl TypeConstraint {
 
 // type inference error
 
+#[derive(Debug)]
 pub enum InferenceError {
     UnknownBindingError(Ident),
     UnificationError(IfcapType,IfcapType),
     InfiniteTypeError(TypeVarId,IfcapType),
 }
+
+impl std::fmt::Display for InferenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use InferenceError::*;
+        match self {
+            UnknownBindingError(id) => write!(f, "unknown binding: {}", id.0),
+
+            UnificationError(ty1,ty2) => write!(f, "cannot unify types {} and {}", ty1, ty2),
+
+            InfiniteTypeError(id,ty) => write!(f, "ty{} is infinite, equals {}", id, ty),
+        }
+    }
+}
+
+impl std::error::Error for InferenceError {}

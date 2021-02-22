@@ -2,8 +2,8 @@
 
 use im::Vector as IVector;
 
-#[derive(PartialEq,Eq,Clone,Copy,Hash)]
-pub struct Ident(&'static str);
+#[derive(PartialEq,Eq,Clone,Copy,Debug,Hash)]
+pub struct Ident(pub &'static str);
 
 #[derive(PartialEq,Eq,Clone,Copy)]
 pub enum SecurityLevel { Public, Secret }
