@@ -12,6 +12,7 @@ use super::InferenceError;
 use super::InferenceError::*;
 use super::LatticeExpr;
 use super::LatticeEq;
+use super::lattice_solve::CNFLiteral;
 
 /// substitution of type variables with types
 pub type Subst = HashMap<TypeVarId, IfcapType>;
@@ -248,10 +249,24 @@ fn subtype_induce_lattice_eqs(ty1: &IfcapType, ty2: &IfcapType) -> IVector<Latti
 fn solve_lattice_constraints(constraints: IVector<LatticeEq>) -> Result<(),InferenceError> {
     let mut translator = super::lattice_solve::TranslationContext::new();
     let predicates = translator.lattice_encoding_to_predicates(constraints);
-    let propositions = translator.propositionalize(predicates);
+    let propositions = translator.propositionalize(&predicates);
+    let mut cnf = IVector::new();
 
-    for proposition in propositions.iter() {
-        println!("{}", proposition)
+    for prop in propositions.iter() {
+        println!("{}", prop);
+        cnf.append(translator.to_cnf(prop));
+    }
+
+    for clause in cnf.iter() {
+        print!("[ ");
+        for lit in clause.iter() {
+            let litstr = match lit {
+                CNFLiteral::PosAtom(atom) => atom.to_string(),
+                CNFLiteral::NegAtom(atom) => format!("{}{}", "!", atom.to_string()),
+            };
+            print!("{} ", litstr);
+        }
+        println!("]");
     }
 
     Ok(())

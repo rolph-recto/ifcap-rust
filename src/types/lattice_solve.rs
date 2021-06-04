@@ -1,8 +1,10 @@
 //! solve lattice constraints
 
 use std::collections::HashMap;
+use im::HashMap as IHashMap;
 use im::HashSet as IHashSet;
 use im::Vector as IVector;
+use im::vector as ivector;
 
 use super::LatticeExpr;
 use super::LatticeEq;
@@ -113,6 +115,16 @@ impl std::fmt::Display for Proposition {
     }
 }
 
+#[derive(PartialEq,Eq,Copy,Clone,Hash)]
+pub enum CNFLiteral {
+    PosAtom(PropositionId),
+    NegAtom(PropositionId)
+}
+
+pub type CNFProposition = IVector<IVector<CNFLiteral>>;
+
+pub type Model = IHashMap<PropositionId, bool>;
+
 pub struct TranslationContext {
     cur_term_const: i32,
     cur_proposition_id: i32,
@@ -172,7 +184,7 @@ impl TranslationContext {
                     let p2 = self.lattice_expr_to_predicate(l2, &Term::Var);
                     Predicate::and(
                         Predicate::implies(p1.clone(), p2.clone()),
-                        Predicate::implies(p2.clone(), p1.clone()),
+                        Predicate::implies(p2, p1),
                     )
                 }
 
@@ -245,7 +257,7 @@ impl TranslationContext {
     }
 
     /// convert predicate logic formula into propositional logic formula
-    pub fn propositionalize(&mut self, predicates: IVector<Predicate>) -> IVector<Proposition> {
+    pub fn propositionalize(&mut self, predicates: &IVector<Predicate>) -> IVector<Proposition> {
         // collect ground terms (Herbrand universe)
         let ground_terms =
             predicates.iter()
@@ -274,5 +286,186 @@ impl TranslationContext {
         }
 
         propositions
+    }
+
+    /// convert proposition to CNF
+    pub fn to_cnf(&mut self, prop: &Proposition) -> CNFProposition {
+        use Proposition::*;
+        use CNFLiteral::*;
+
+        match prop {
+            // is prop is atomic, it is already in CNF
+            AtomicProposition(atom_id) => ivector![ivector![PosAtom(*atom_id)]],
+
+            And(p1, p2) => {
+                let mut cnf: CNFProposition = IVector::new();
+                let cnf1 = self.to_cnf(p1);
+                let cnf2 = self.to_cnf(p2);
+                cnf.append(cnf1);
+                cnf.append(cnf2);
+                cnf
+            }
+
+            Or(p1, p2) => {
+                let mut cnf: CNFProposition = IVector::new();
+                let cnf1 = self.to_cnf(p1);
+                let cnf2 = self.to_cnf(p2);
+
+                for pp1 in cnf1.iter() {
+                    for pp2 in cnf2.iter() {
+                        let mut clause: IVector<CNFLiteral> = IVector::new();
+
+                        for lit1 in pp1.iter() {
+                            clause.push_back(*lit1);
+                        }
+
+                        for lit2 in pp2.iter() {
+                            clause.push_back(*lit2);
+                        }
+
+                        cnf.push_back(clause);
+                    }
+                }
+
+                cnf
+            }
+
+            Implies(p1, p2) => self.to_cnf(&Or(Box::new(Not(p1.clone())), p2.clone())),
+
+            Not(p) => {
+                // TODO: figure out why this has to be so complicated
+                match &**p {
+                    // if subproposition is atomic, prop is already in CNF
+                    AtomicProposition(atom_id) =>
+                        ivector![ivector![NegAtom(*atom_id)]],
+
+                    // continue converting subproposition into CNF
+                    And(pp1, pp2) =>
+                        self.to_cnf(&Or(Box::new(Not(pp1.clone())), Box::new(Not(pp2.clone())))),
+
+                    Or(pp1, pp2) =>
+                        self.to_cnf(&And(Box::new(Not(pp1.clone())), Box::new(Not(pp2.clone())))),
+
+                    Implies(pp1, pp2) =>
+                        self.to_cnf(&And(Box::new(Not(pp1.clone())), pp2.clone())),
+
+                    Not(p) =>
+                        self.to_cnf(&p.clone())
+                }
+            }
+        }
+    }
+
+    /// partition clause into positive and negative literals
+    fn partition_clause(
+        &mut self,
+        clause: &IVector<CNFLiteral>
+    ) -> (IHashSet<PropositionId>, IHashSet<PropositionId>) {
+        let mut posset: IHashSet<PropositionId> = IHashSet::new();
+        let mut negset: IHashSet<PropositionId> = IHashSet::new();
+
+        for lit in clause.iter() {
+            match lit {
+                CNFLiteral::PosAtom(atom) => {
+                    posset.insert(*atom);
+                },
+
+                CNFLiteral::NegAtom(atom) => {
+                    negset.insert(*atom);
+                }
+            }
+        }
+
+        (posset, negset)
+    }
+
+    /// remove clauses that are always true regardless of the model
+    fn remove_tautological_clauses(
+        &mut self,
+        cnf: &CNFProposition
+    ) -> CNFProposition {
+        let mut new_cnf: CNFProposition = IVector::new();
+
+        for clause in cnf.iter() {
+            let (posset, negset) = self.partition_clause(clause);
+            if posset.union(negset).len() == 0 {
+                new_cnf.push_back(clause.clone());
+            }
+        }
+
+        new_cnf
+    }
+
+    /// remove unit clauses and extend model
+    fn extract_unit_clauses(
+        &mut self,
+        cnf: &CNFProposition
+    ) -> (CNFProposition, IHashSet<CNFLiteral>) {
+        let mut new_cnf: CNFProposition = IVector::new();
+        let mut unit_clauses: IHashSet<CNFLiteral> = IHashSet::new();
+
+        for clause in cnf.iter() {
+            if clause.len() == 1 {
+                unit_clauses.insert(*clause.head().unwrap());
+
+            } else {
+                new_cnf.push_back(clause.clone())
+            }
+        }
+
+        (new_cnf, unit_clauses)
+    }
+
+    /// DPLL algorithm: backtrack and apply resolution rule + extra optimizations
+    fn resolve(&mut self, cnf: &CNFProposition, model: Model) -> Option<Model> {
+        // check for empty clauses (these are always unsatisfiable)
+        if cnf.iter().any(|clause| { clause.len() == 0 }) {
+            Option::None
+
+        } else {
+            // unit propagation
+            let (mut new_cnf, unit_clauses) = self.extract_unit_clauses(cnf);
+
+            // - extend model to add data from unit clauses
+            let mut contradictory_unit = false;
+            for unit_clause in unit_clauses.iter() {
+                let (atom, unit_val) = match unit_clause {
+                    CNFLiteral::PosAtom(atom) => (*atom, true),
+                    CNFLiteral::NegAtom(atom) => (*atom, false)
+                };
+
+                match model.get(&atom) {
+                    Option::None => {
+                        model.insert(atom, unit_val);
+                    },
+
+                    Option::Some(&model_val) => {
+                        // unit clause is inconsistent with model. proposition is unsat
+                        if model_val != unit_val {
+                            contradictory_unit = true
+                        }
+                    }
+                }
+            }
+
+            if contradictory_unit {
+                Option::None
+
+            } else {
+                // pure literal elimination
+
+            }
+        }
+    }
+
+    /// check satisfiability using DPLL
+    fn solve_sat(&mut self, cnf: &CNFProposition) -> Option<Model> {
+        // preprocessing phase
+
+        // remove for tautological clauses
+        let mut new_cnf = self.remove_tautological_clauses(cnf);
+
+        // repeatedly apply resolution to build model
+        self.resolve(&new_cnf, IHashMap::new())
     }
 }
